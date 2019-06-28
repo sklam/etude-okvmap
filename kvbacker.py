@@ -1,4 +1,4 @@
-import pickle
+import html
 import copy
 from pprint import pformat
 from collections import namedtuple
@@ -119,7 +119,9 @@ class RedirectAccess(type):
                 try:
                     v = self._resmngr[entry]
                 except KeyError:
-                    raise AttributeError(k)
+                    raise AttributeError(
+                        "Missing {}.{}".format(type(self).__name__, k),
+                    )
                 else:
                     return _recreate(self._resmngr, v)
             else:
@@ -317,7 +319,7 @@ class ResourceManager(object):
                     label = labelfmt.format(
                         attr,
                         attr,
-                        desc,
+                        html.escape(desc),
                         type(attrval).__name__,
                     )
                     labelbuf.append(label)
@@ -369,8 +371,10 @@ class Infos(Managed):
 
 
 class ManagedList(Managed):
-    def init(self):
+    def init(self, values=()):
         self._count = 0
+        for v in values:
+            self.append(v)
 
     def append(self, item):
         slot = self._count
