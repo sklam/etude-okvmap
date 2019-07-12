@@ -1,5 +1,7 @@
+import json
 import html
 import copy
+import re
 from pprint import pformat
 from collections import namedtuple
 from collections.abc import MutableSequence
@@ -152,34 +154,53 @@ class RedirectAccess(type):
         if 'handle' in _meta_:
             obj._obj_handle = _meta_['handle']
         else:
-            heap = resmngr['__heap__']
-            obj._obj_handle = object_entry(objid=_new_slot(heap))
+            obj._obj_handle = object_entry(objid=_new_slot(resmngr))
             resmngr[obj._obj_handle] = object_meta(cls=cls, attrs=frozenset())
         return obj
 
 
 def _new_slot(heap):
     try:
-        return heap['new_slot']
+        return heap['__heap_slot__']
     finally:
-        heap['new_slot'] += 1
+        heap['__heap_slot__'] += 1
+
+
+assume_info_is_id0 = "Info object id is assumed to be 0"
 
 
 class ResourceManager(object):
     __slots__ = ['_dct', '_infos']
     accepted_types = ()
 
+    @classmethod
+    def load_from_dict(cls, dct):
+        """Make a new ResourceManager from a dictionary.
+        """
+        self = cls()
+        self._dct = dct
+        infos = self.find_object_by_id(0)
+        assert isinstance(infos, Infos), assume_info_is_id0
+        self._infos = infos
+        return self
+
     def __init__(self):
-        self._dct = {
-            '__heap__': {'new_slot': 0},
-        }
+        from tict import Tict
+        # dictimpl = dict
+        dictimpl = Tict
+        self._dct = dictimpl()
+        self._dct['__heap_slot__'] = 0
         self._infos = self.new(Infos)
+        assert self.flatten(self._infos).handle.objid == 0, assume_info_is_id0
 
     def __getitem__(self, k):
         return self._dct[k]
 
     def __setitem__(self, k, v):
         self._dct[k] = v
+
+    def __delitem__(self, k):
+        del self._dct[k]
 
     @property
     def infos(self):
@@ -289,13 +310,15 @@ class ResourceManager(object):
         """
         return self.inflate(flatten_entry(handle=object_entry(objid)))
 
-    def visualize(self):
-        """Print a DOT graph
+    def visualize_raw(self):
         """
-        import graphviz as gv
+        Returns
+        -------
+        (nodes, edges) : (List[Dict], List[Dict])
 
-        g = gv.Digraph()
-
+        """
+        # Draw nodes
+        nodes = []
         managed_attrs = []
         labelfmt = ('<TD PORT={!r}>{}<BR/>'
                     '<FONT POINT-SIZE="8pt">{} :: {}</FONT></TD>')
@@ -308,13 +331,27 @@ class ResourceManager(object):
                     obj._obj_handle.objid
                 ),
             ]
-            for attr in sorted(self.get_attributes(obj)):
-                attrval = getattr(obj, attr)
-                if isinstance(attrval, Managed):
+
+            def attr_sort(name):
+                m = re.match(r"^_\d+$", name)
+                if m is None:
+                    return name
+                else:
+                    return '{:08x}'.format(int(name[1:]))
+
+            arglist = sorted(self.get_attributes(obj), key=attr_sort)
+            for attr in arglist:
+                attrval = getattr(obj, attr, None)
+                if attrval is None:
+                    # Allow incomplete graph.
+                    # Note: useful in animating revisions.
+                    continue
+                elif isinstance(attrval, Managed):
                     dst = "{}:this".format(attrval._obj_handle)
                     managed_attrs.append(('{}:{}'.format(src, attr), dst))
                     labelbuf.append('<TD PORT={!r}>{}</TD>'.format(attr, attr))
                 else:
+                    # Non-managed values
                     desc = repr(attrval)
                     label = labelfmt.format(
                         attr,
@@ -324,6 +361,15 @@ class ResourceManager(object):
                     )
                     labelbuf.append(label)
 
+            # if isinstance(obj, ManagedList) and len(labelbuf) > 8:
+            #     head, tail = labelbuf[0], labelbuf[1:]
+            #     tail = ''.join(map('<TR>{}</TR>'.format, tail))
+            #     label = '''<
+            #         <TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0">
+            #         <TR><TD PORT="this">{}</TD></TR>
+            #         {}</TABLE>
+            #     >'''.format(head, tail)
+            # else:
             head, tail = labelbuf[0], ''.join(labelbuf[1:])
             if tail:
                 tail = "<TR>{}</TR>".format(tail)
@@ -332,15 +378,139 @@ class ResourceManager(object):
                 <TR><TD PORT="this" COLSPAN="{}">{}</TD></TR>
                 {}</TABLE>
             >'''.format(max(1, len(labelbuf) - 1), head, tail)
-            g.node(src, label=label, shape='plaintext')
 
+            nodes.append({
+                'name': src,
+                'label': label,
+                'shape': 'plaintext'
+            })
+
+        # Draw edges
+        edges = []
         for src, dst in managed_attrs:
-            g.edge(src, dst)
-        return g
+            edges.append({
+                'tail_name': src,
+                'head_name': dst,
+            })
+
+        return nodes, edges
+
+    def visualize(self):
+        """Print a DOT graph
+        """
+        nodes, edges = self.visualize_raw()
+        return graphviz_visualize(nodes, edges)
+
+    def internal_dict(self):
+        """Returns the internal dictionary
+        """
+        return self._dct.copy()
 
 
-_iter_referers_result = namedtuple('_iter_referers_result', ['referer', 'attrname'])
-_iter_referents_result = namedtuple('_iter_referents_result', ['attrname', 'referent'])
+def graphviz_visualize(nodes, edges):
+    """Visualize nodes and edges as with graphviz
+
+    Note: requires the `graphviz` (the python package)
+    """
+    import graphviz as gv
+
+    g = gv.Digraph()
+    for node in nodes:
+        g.node(**node)
+    for edge in edges:
+        g.edge(**edge)
+    return g
+
+
+def graphviz_diff(last_nodes, last_edges, nodes, edges):
+    """Highlight the difference between the last and current nodes and edges.
+    """
+    oldnodes = {n['name']: n for n in last_nodes}
+    oldedges = {info['tail_name']: info['head_name'] for info in last_edges}
+    for n in nodes:
+        # New node
+        if n['name'] not in oldnodes:
+            n['color'] = 'blue'
+        # Node label changed
+        elif n['label'] != oldnodes[n['name']]['label']:
+            n['color'] = 'darkgreen'
+    for e in edges:
+        # New edge
+        if e['head_name'] != oldedges.get(e['tail_name'], None):
+            e['color'] = 'blue'
+    return nodes, edges
+
+
+def graphviz_render_revisions(resmngr, since=None, backend='d3', attrs={}):
+    """Render revisions applied to **resmngr** start from **since** revision.
+
+
+    Parameters
+    ----------
+    resmngr :
+        A ResourceManager backed with Tict.
+    since : tict.SavedState or None
+    backend : str; defaults to "d3"
+        Available options are: "d3", and "gv".
+    attrs: dict; defaults to ``{}``
+        For attaching additional keyword arguments to the backend.
+    """
+    journals = resmngr.internal_dict()
+
+    last_nodes, last_edges = [], []
+    dots = []
+    for i, rev in enumerate(journals.revisions(since=since)):
+        # Load dictionary as plain ResourceManager.
+        # Note, it's row-polymorphic
+        rev_res = ResourceManager.load_from_dict(rev)
+        nodes, edges = rev_res.visualize_raw()
+        diffed = graphviz_diff(last_nodes, last_edges, nodes, edges)
+        g = graphviz_visualize(*diffed)
+        # g.render(filename=name, format='gv', directory='anim', cleanup=True)
+        dots.append(str(g))
+        last_nodes, last_edges = nodes, edges
+
+    backends = {
+        'd3': _graphviz_revs_backend,
+        'gv': _graphviz_revs_backend,
+    }
+    return backends[backend](dots, **attrs)
+
+
+def _graphviz_revs_backend(dots, name_prefix='resmngr_revs', dir='anim',
+                           format='gv'):
+    """Graphviz revision rendering backend
+    """
+    import graphviz as gv
+
+    filenames = []
+    places = len(str(len(dots)))
+    for i, src in enumerate(dots):
+        g = gv.Source(src)
+        name = '{{}}_{{:0{}}}'.format(places).format(name_prefix, i)
+        path = g.render(
+            filename=name, format=format, directory=dir, cleanup=True,
+        )
+        filenames.append(path)
+    return filenames
+
+
+def _graphviz_d3_revs_backend(dots):
+    """D3 revision rendering backend
+    """
+    # See https://github.com/magjac/d3-graphviz
+    with open('d3dot_template.html') as fin:
+        template = fin.read()
+    js_dots = map(json.dumps, map(lambda x: x.splitlines(), dots))
+    return template.replace('/*replaceme*/', ',\n'.join(js_dots))
+
+
+_iter_referers_result = namedtuple(
+    '_iter_referers_result', ['referer', 'attrname'],
+)
+_iter_referents_result = namedtuple(
+    '_iter_referents_result', ['attrname', 'referent'],
+)
 
 
 class Managed(metaclass=RedirectAccess):
@@ -360,7 +530,8 @@ class Managed(metaclass=RedirectAccess):
                 return "@{}".format(get_short_id(self))
             else:
                 attrs = self._resmngr.get_attributes(self)
-                pairs = ['{}={!r}'.format(k, getattr(self, k)) for k in sorted(attrs)]
+                pairs = ['{}={!r}'.format(k, getattr(self, k))
+                         for k in sorted(attrs)]
                 return "{}@{}({})".format(
                     cls, get_short_id(self), ', '.join(pairs),
                 )
@@ -380,6 +551,17 @@ class ManagedList(Managed):
         slot = self._count
         self._count += 1
         setattr(self, '_{}'.format(slot), item)
+
+    def extend(self, iterable):
+        for i in iterable:
+            self.append(i)
+
+    def pop(self):
+        item = self[-1]
+        self._count -= 1
+        name = '_{}'.format(self._count)
+        delattr(self, name)
+        return item
 
     def __len__(self):
         return self._count
