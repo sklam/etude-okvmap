@@ -169,9 +169,17 @@ def _new_slot(heap):
 assume_info_is_id0 = "Info object id is assumed to be 0"
 
 
+class IncompleteStateError(Exception):
+        """An error indicating that the ResourceManager cannot be loaded
+        from a dictionary because it is incomplete.
+        """
+        pass
+
+
 class ResourceManager(object):
     __slots__ = ['_dct', '_infos']
     accepted_types = ()
+
 
     @classmethod
     def load_from_dict(cls, dct):
@@ -179,7 +187,10 @@ class ResourceManager(object):
         """
         self = cls()
         self._dct = dct
-        infos = self.find_object_by_id(0)
+        try:
+            infos = self.find_object_by_id(0)
+        except KeyError:
+            raise IncompleteStateError("Info entry is not available.")
         assert isinstance(infos, Infos), assume_info_is_id0
         self._infos = infos
         return self
@@ -433,7 +444,7 @@ def graphviz_diff(last_nodes, last_edges, nodes, edges):
             n['color'] = 'blue'
         # Node label changed
         elif n['label'] != oldnodes[n['name']]['label']:
-            n['color'] = 'darkgreen'
+            n['color'] = 'orange'
     for e in edges:
         # New edge
         if e['head_name'] != oldedges.get(e['tail_name'], None):
@@ -462,7 +473,10 @@ def graphviz_render_revisions(resmngr, since=None, backend='d3', attrs={}):
     for i, rev in enumerate(journals.revisions(since=since)):
         # Load dictionary as plain ResourceManager.
         # Note, it's row-polymorphic
-        rev_res = ResourceManager.load_from_dict(rev)
+        try:
+            rev_res = ResourceManager.load_from_dict(rev)
+        except IncompleteStateError:
+            continue
         nodes, edges = rev_res.visualize_raw()
         diffed = graphviz_diff(last_nodes, last_edges, nodes, edges)
         g = graphviz_visualize(*diffed)
@@ -471,7 +485,7 @@ def graphviz_render_revisions(resmngr, since=None, backend='d3', attrs={}):
         last_nodes, last_edges = nodes, edges
 
     backends = {
-        'd3': _graphviz_revs_backend,
+        'd3': _graphviz_d3_revs_backend,
         'gv': _graphviz_revs_backend,
     }
     return backends[backend](dots, **attrs)

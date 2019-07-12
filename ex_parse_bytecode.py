@@ -34,14 +34,16 @@ class Translate:
                 op = self._optable[cur_inst.opname]
                 op(env, cur_inst)
         finally:
-            out = graphviz_render_revisions(
-                env.res,
-                since=state_init,
-                backend='gv',
-                attrs={
-                    'name_prefix': 'parse_bytecode',
-                },
-            )
+            # # GV
+            # out = graphviz_render_revisions(
+            #     env.res,
+            #     since=state_init,
+            #     backend='gv',
+            #     attrs={
+            #         'name_prefix': 'parse_bytecode',
+            #     },
+            # )
+            out = graphviz_render_revisions(env.res, since=state_init, backend='d3')
             print(out)
 
     def advance_pc(self, pc):
