@@ -8,7 +8,12 @@ import inspect
 from llvmlite import ir
 from llvmlite import binding as llvm
 
-from kvbacker import ResourceManager, Managed, ManagedList
+from kvbacker import (
+    ResourceManager,
+    Managed,
+    ManagedList,
+    graphviz_render_revisions,
+)
 
 
 class FunctionCollections(Managed):
@@ -302,6 +307,11 @@ def test():
     print(ir_mod)
 
     execute(ir_mod)
+
+    rendered = graphviz_render_revisions(context._rm)
+    with open('example_minilang.html', 'w') as fout:
+        print(rendered, file=fout)
+
 
 if __name__ == '__main__':
     test()

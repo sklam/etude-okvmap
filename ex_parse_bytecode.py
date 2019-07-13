@@ -24,16 +24,27 @@ class Translate:
     def run(self):
         env = Env(pc=0, pc_next=self.advance_pc)
         # Set arguments
-
         state_init = env.res.internal_dict().save()
         for param in self._sig.parameters:
             env.setup_arg(param)
+        pending_env = [env]
+        processed = set()
         try:
-            while env.running:
-                cur_inst = self._instmap[env.pc]
-                op = self._optable[cur_inst.opname]
-                op(env, cur_inst)
+            while pending_env:
+                env = pending_env.pop()
+                processed.add(env.pc)
+                while env.running:
+                    cur_inst = self._instmap[env.pc]
+                    op = self._optable[cur_inst.opname]
+                    op(env, cur_inst)
+                for inst in env.instructions:
+                    if isinstance(inst, JumpLike):
+                        if inst.target not in processed:
+                            new_env = env.fork(pc=inst.target)
+                            pending_env.append(new_env)
         finally:
+            pass
+            env.res.visualize().view()
             # # GV
             # out = graphviz_render_revisions(
             #     env.res,
@@ -43,22 +54,30 @@ class Translate:
             #         'name_prefix': 'parse_bytecode',
             #     },
             # )
-            out = graphviz_render_revisions(env.res, since=state_init, backend='d3')
-            print(out)
+            # # d3
+            # out = graphviz_render_revisions(env.res, since=state_init, backend='d3')
+            # print(out)
 
     def advance_pc(self, pc):
         return self._nextpcmap[pc]
 
 
 class Env:
-    def __init__(self, pc, pc_next):
-        self.res = ResourceManager()
+    def __init__(self, pc, pc_next, res=None):
+        self.res = res or ResourceManager()
         self.pc = 0
         self.running = True
         self._pc_next = pc_next
         self.stack = self.res.new_list()
         self.instructions = self.res.new_list()
         self.varmap = self.res.new(VarMap)
+
+    def fork(self, pc):
+        env = Env(pc=pc, pc_next=self._pc_next, res=self.res)
+        # XXX
+        env.stack = self.stack
+        env.varmap = self.varmap
+        return env
 
     def setup_arg(self, name):
         self.varmap[name] = self.res.new(Arg, name=name)
@@ -103,6 +122,9 @@ class VarMap(Managed):
     def __getitem__(self, key):
         return getattr(self, key)
 
+    def items(self):
+        return self._resmngr.iter_referents(self)
+
 
 class ArgList(ManagedList):
     pass
@@ -142,13 +164,17 @@ class OpCall(Inst):
         self.args = args
 
 
-class OpBranch(Inst):
+class JumpLike(Inst):
+    pass
+
+
+class OpBranch(JumpLike):
     def init(self, condition, target):
         self.condition = condition
         self.target = target
 
 
-class OpJump(Inst):
+class OpJump(JumpLike):
     def init(self, target):
         self.target = target
 
